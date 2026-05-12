@@ -1,14 +1,27 @@
-*.tar
-*.tar.*
-*.jar
-*.exe
-*.msi
-*.deb
-*.zip
-*.tgz
-*.log
-*.log.*
-*.sig
+# Armbian build artifacts
+armbian-build/
+output/
+cache/
 
-pkg/
-src/
+# Images
+*.img
+*.img.tar.xz
+*.img.xz
+
+# Logs
+*.log
+
+# Temp files
+*.tmp
+
+# Fetched sources (should be empty in repo)
+src/overlay/opt/orionos/sources/EmulationStation/*
+src/overlay/opt/orionos/sources/PortMaster-GUI/*
+src/overlay/opt/orionos/sources/es-theme-carbon/*
+# But keep the directories themselves with .gitkeep
+!src/overlay/opt/orionos/sources/EmulationStation/.gitkeep
+!src/overlay/opt/orionos/sources/PortMaster-GUI/.gitkeep
+!src/overlay/opt/orionos/sources/es-theme-carbon/.gitkeep
+
+# Other
+.history
