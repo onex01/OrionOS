@@ -23,9 +23,9 @@ echo ""
 # Список тем: name|repo_url
 declare -a THEMES=(
     "carbon|https://github.com/RetroPie/es-theme-carbon.git"
-    "epicnoir|https://github.com/RetroPie/es-theme-epicnoir.git"
+    "spare|https://github.com/mattrixk/es-theme-spare.git"
+    "art-book|https://github.com/anthonycaccese/es-theme-art-book.git"
     "chicuelo|https://github.com/chicueloarcade/es-theme-chicuelo.git"
-    "snes-mini|https://github.com/RetroPie/es-theme-snes-mini.git"
     "simple|https://github.com/RetroPie/es-theme-simple.git"
 )
 
