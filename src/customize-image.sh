@@ -10,7 +10,7 @@ echo "=== OrionOS customization v8.0 started at $(date) ==="
 mkdir -p /opt/orionos/{configs,tools}
 
 # ---------- 1. GPU Mali G31 через Device Tree ----------
-echo "[1/20] Enabling GPU in device tree..."
+echo "[1/19] Enabling GPU in device tree..."
 DTS_FILE=/boot/dtb/allwinner/sun50i-h618-orangepi-zero3.dtb
 if [ -f "$DTS_FILE" ]; then
     dtc -I dtb -O dts "$DTS_FILE" -o /tmp/zero3.dts 2>/dev/null || true
@@ -27,14 +27,14 @@ if [ -f /tmp/overlay/boot/boot.bmp ]; then
 fi
 
 # ---------- 2. Базовые зависимости ----------
-echo "[2/20] Installing base dependencies..."
+echo "[2/19] Installing base dependencies..."
 apt-get update
 
 # Mesa / GPU
 apt-get install -y mesa-utils libgles2-mesa-dev libegl1-mesa-dev libgl1-mesa-dri
 
 # X11 / DM
-apt-get install -y xserver-xorg xinit lightdm lightdm-gtk-greeter onboard firefox-esr
+apt-get install -y xserver-xorg xinit nodm
 
 # Сеть / BT
 apt-get install -y dialog bluetooth bluez bluez-tools network-manager wpasupplicant
@@ -63,6 +63,7 @@ ShowDelay=0
 PLYCONF
 
 # ---------- 3. Модули ядра ----------
+echo "[3/19] Installing core modules..."
 mkdir -p /etc/modules-load.d
 cat > /etc/modules-load.d/gamepad.conf << 'MODCONF'
 joydev
@@ -80,11 +81,11 @@ snd-usb-audio
 MODCONF
 
 # ---------- 4. RetroArch ----------
-echo "[4/20] Installing RetroArch..."
+echo "[419] Installing RetroArch..."
 apt-get install -y retroarch libretro-*
 
 # ---------- 5. Whitelist ядра ----------
-echo "[5/20] Installing whitelisted libretro cores..."
+echo "[5/19] Installing whitelisted libretro cores..."
 mkdir -p /usr/lib/aarch64-linux-gnu/libretro
 
 if [ -d /tmp/overlay/opt/orionos/cores ]; then
@@ -122,7 +123,7 @@ if [ -f /tmp/overlay/opt/orionos/configs/cores-whitelist.txt ]; then
 fi
 
 # ---------- 6. EmulationStation ----------
-echo "[6/20] Building EmulationStation..."
+echo "[6/19] Building EmulationStation..."
 apt-get install -y libsdl2-dev libboost-system-dev libboost-filesystem-dev \
     libboost-date-time-dev libboost-locale-dev libfreeimage-dev libfreetype6-dev \
     libeigen3-dev libcurl4-openssl-dev libasound2-dev libgl1-mesa-dev \
@@ -136,7 +137,7 @@ cmake . && make -j$(nproc) && make install
 cd / && rm -rf /tmp/EmulationStation
 
 # ---------- 7. Пользователь orion ----------
-echo "[7/20] Setting up user orion..."
+echo "[7/19] Setting up user orion..."
 if id -u orion &>/dev/null; then
     userdel -r orion 2>/dev/null || true
     rm -rf /home/orion
@@ -151,7 +152,7 @@ fi
 chown -R orion:orion /home/orion
 
 # ---------- 8. PortMaster ----------
-echo "[8/20] Setting up PortMaster..."
+echo "[8/19] Setting up PortMaster..."
 mkdir -p /roms/ports/PortMaster
 cp -r /tmp/overlay/opt/orionos/sources/PortMaster-GUI/* /roms/ports/PortMaster/ 2>/dev/null || true
 ln -sf /roms/ports/PortMaster /opt/portmaster 2>/dev/null || true
@@ -187,7 +188,7 @@ OGA
 systemctl enable oga_events.service 2>/dev/null || true
 
 # ---------- 9. Игровые папки ----------
-echo "[9/20] Creating ROM directories..."
+echo "[9/19] Creating ROM directories..."
 ROMS_DIRS=(
   nes snes n64 gb gbc gba nds pokemini virtualboy gw
   megadrive mastersystem gamegear segacd sega32x sg-1000 dreamcast saturn segaarcade
@@ -212,7 +213,7 @@ chown -R orion:orion /roms
 mkdir -p /roms2
 
 # ---------- 10. Конфиги ES ----------
-echo "[10/20] Installing ES configs..."
+echo "[10/10] Installing ES configs..."
 mkdir -p /home/orion/.emulationstation
 
 # Копируем полный конфиг из overlay (если есть)
@@ -259,6 +260,7 @@ chmod 644 /home/orion/.emulationstation/es_settings.cfg
 chmod 755 /home/orion/.emulationstation
 
 # ---------- 11. Тема ----------
+echo "[11/19] Installing ES themes..."
 mkdir -p /home/orion/.emulationstation/themes
 if [ -d /tmp/overlay/opt/orionos/sources/es-theme-carbon ]; then
     cp -r /tmp/overlay/opt/orionos/sources/es-theme-carbon /home/orion/.emulationstation/themes/carbon
@@ -266,6 +268,7 @@ if [ -d /tmp/overlay/opt/orionos/sources/es-theme-carbon ]; then
 fi
 
 # ---------- 12. Автомонтирование ----------
+echo "[12/19] Installing automount script..."
 cat > /etc/udev/rules.d/99-external-storage.rules << 'UDEV'
 ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]", RUN+="/usr/local/bin/automount.sh %k"
 UDEV
@@ -287,6 +290,7 @@ AUTOMOUNT
 chmod +x /usr/local/bin/automount.sh
 
 # ---------- 13. Скрипты Ports ----------
+echo "[13/19] Installing ports script..."
 cat > /roms/ports/Browser.sh << 'BROWSER'
 #!/bin/bash
 onboard &
@@ -356,7 +360,7 @@ chmod +x /roms/ports/Format-USB.sh
 chown orion:orion /roms/ports/Format-USB.sh
 
 # ---------- 14. Bluetooth (улучшенный) ----------
-echo "[14/20] Setting up Bluetooth..."
+echo "[14/19] Setting up Bluetooth..."
 
 # BlueZ main.conf из overlay
 if [ -f /tmp/overlay/etc/bluetooth/main.conf ]; then
@@ -413,7 +417,7 @@ systemctl enable bt-autopair.service 2>/dev/null || true
 usermod -a -G bluetooth orion
 
 # ---------- 15. Firstboot ----------
-echo "[15/20] Installing firstboot script..."
+echo "[15/19] Installing firstboot script..."
 if [ -f /tmp/overlay/opt/orionos/firstboot.sh ]; then
     cp /tmp/overlay/opt/orionos/firstboot.sh /opt/orionos/firstboot.sh
 else
@@ -455,27 +459,8 @@ WantedBy=multi-user.target
 SERVICE
 systemctl enable orionos-firstboot.service
 
-# ---------- 16. LightDM ----------
-echo "[16/20] Configuring LightDM..."
-mkdir -p /etc/lightdm/lightdm.conf.d
-cat > /etc/lightdm/lightdm.conf.d/50-orionos.conf << 'LIGHTDM'
-[Seat:*]
-autologin-user=orion
-autologin-user-timeout=0
-session-wrapper=/etc/X11/Xsession
-greeter-session=lightdm-gtk-greeter
-LIGHTDM
-
-cat > /home/orion/.xsession << 'XSESSION'
-#!/bin/bash
-plymouth quit 2>/dev/null
-exec emulationstation
-XSESSION
-chmod +x /home/orion/.xsession
-chown orion:orion /home/orion/.xsession
-
-# ---------- 17. RetroArch конфиг ----------
-echo "[17/20] RetroArch config..."
+# ---------- 16. RetroArch конфиг ----------
+echo "[16/19] RetroArch config..."
 mkdir -p /home/orion/.config/retroarch
 cat > /home/orion/.config/retroarch/retroarch.cfg << 'RACFG'
 video_driver = "gl"
@@ -501,15 +486,15 @@ assets_directory = "/usr/share/libretro/assets"
 RACFG
 chown -R orion:orion /home/orion/.config/retroarch
 
-# ---------- 18. Инструменты OrionOS ----------
-echo "[18/20] Installing OrionOS tools..."
+# ---------- 17. Инструменты OrionOS ----------
+echo "[17/19] Installing OrionOS tools..."
 if [ -d /tmp/overlay/opt/orionos/tools ]; then
     cp -r /tmp/overlay/opt/orionos/tools/* /opt/orionos/tools/ 2>/dev/null || true
 fi
 chmod +x /opt/orionos/tools/*.sh 2>/dev/null || true
 
-# ---------- 19. Флаг resize + чистка ----------
-echo "[19/20] Final cleanup..."
+# ---------- 18. Флаг resize + чистка ----------
+echo "[18/19] Final cleanup..."
 touch /opt/orionos/.resize-needed
 
 # Маскируем armbian-firstrun полностью
@@ -531,8 +516,8 @@ rm -rf /lib/firmware/{amdgpu,i915,nvidia,radeon} 2>/dev/null || true
 # Очистка кэшей
 rm -rf /var/cache/* /tmp/* /var/tmp/*
 
-# ---------- 20. Имя хоста и загрузка ----------
-echo "[20/20] Finalizing..."
+# ---------- 19. Имя хоста и загрузка ----------
+echo "[19/19] Finalizing..."
 apt-get purge -y armbian-firstrun-config &>/dev/null || true
 rm -f /etc/profile.d/armbian-check-first-login.sh
 rm -f /etc/profile.d/armbian-check-first-login-reboot.sh
