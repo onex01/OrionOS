@@ -1,27 +1,53 @@
-# Armbian build artifacts
-armbian-build/
-output/
-cache/
+# ═══════════════════════════════════════════════════════════════
+# OrionOS .gitignore
+# ═══════════════════════════════════════════════════════════════
 
-# Images
+# --- Бинарные ядра (скачиваются через sync-cores.sh) ---
+src/overlay/opt/orionos/cores/*.so
+src/overlay/opt/orionos/cores/*.zip
+
+# --- Темы (скачиваются через sync-themes.sh) ---
+src/overlay/opt/orionos/themes/*/
+!src/overlay/opt/orionos/themes/.gitkeep
+
+# --- Исходники (скачиваются через sync-resources.sh) ---
+src/overlay/opt/orionos/sources/EmulationStation/
+src/overlay/opt/orionos/sources/PortMaster-GUI/
+src/overlay/opt/orionos/sources/es-theme-carbon/
+
+# --- Armbian build system (~2-3 GB, клонируется при сборке) ---
+armbian-build/
+
+# --- Сборочные артефакты ---
 *.img
 *.img.tar.xz
-*.img.xz
+*.img.gz
+*.img.bz2
+build/
+dist/
+output/images/
 
-# Logs
+# --- Логи ---
 *.log
+/var/log/
 
-# Temp files
+# --- Кэши ---
+*.cache
+__pycache__/
+*.pyc
+*.pyo
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Временные файлы ---
+tmp/
+temp/
 *.tmp
-
-# Fetched sources (should be empty in repo)
-src/overlay/opt/orionos/sources/EmulationStation/*
-src/overlay/opt/orionos/sources/PortMaster-GUI/*
-src/overlay/opt/orionos/sources/es-theme-carbon/*
-# But keep the directories themselves with .gitkeep
-!src/overlay/opt/orionos/sources/EmulationStation/.gitkeep
-!src/overlay/opt/orionos/sources/PortMaster-GUI/.gitkeep
-!src/overlay/opt/orionos/sources/es-theme-carbon/.gitkeep
-
-# Other
 .history

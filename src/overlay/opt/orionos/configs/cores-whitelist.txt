@@ -1,0 +1,84 @@
+# OrionOS Core Whitelist — 48 cores for Orange Pi Zero 3 (H618, Mali G31)
+# Nintendo
+nestopia_libretro.so
+snes9x_libretro.so
+mupen64plus_next_libretro.so
+sameboy_libretro.so
+mgba_libretro.so
+melonds_libretro.so
+gambatte_libretro.so
+
+# Sega
+genesis_plus_gx_libretro.so
+picodrive_libretro.so
+yabasanshiro_libretro.so
+smsplus_libretro.so
+gearcoleco_libretro.so
+
+# Sony
+pcsx_rearmed_libretro.so
+ppsspp_libretro.so
+
+# NEC
+mednafen_pce_fast_libretro.so
+mednafen_supergrafx_libretro.so
+
+# Arcade / Neo Geo
+fbneo_libretro.so
+mame2003_plus_libretro.so
+neocd_libretro.so
+geolith_libretro.so
+
+# Atari
+stella_libretro.so
+a5200_libretro.so
+atari800_libretro.so
+prosystem_libretro.so
+handy_libretro.so
+
+# Commodore
+vice_x64_libretro.so
+vice_x128_libretro.so
+vice_xvic_libretro.so
+puae_libretro.so
+
+# DOS / PC
+dosbox_pure_libretro.so
+
+# MSX / Spectrum
+fmsx_libretro.so
+fuse_libretro.so
+cap32_libretro.so
+
+# Others
+opera_libretro.so
+same_cdi_libretro.so
+race_libretro.so
+mrboom_libretro.so
+freeintv_libretro.so
+freechaf_libretro.so
+uzem_libretro.so
+vemulator_libretro.so
+pokemini_libretro.so
+potator_libretro.so
+lowresnx_libretro.so
+geolith_libretro.so
+wasm4_libretro.so
+vircon32_libretro.so
+fake08_libretro.so
+tic80_libretro.so
+
+# Engines
+scummvm_libretro.so
+prboom_libretro.so
+tyrquake_libretro.so
+easyrpg_libretro.so
+cannonball_libretro.so
+reminiscence_libretro.so
+nxengine_libretro.so
+xrick_libretro.so
+ecwolf_libretro.so
+
+# 8-bit
+81_libretro.so
+gw_libretro.so
