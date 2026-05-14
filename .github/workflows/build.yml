@@ -22,6 +22,12 @@ jobs:
       - name: Prune cores
         run: bash scripts/prune-cores.sh
 
+      - name: Sync resources (ES + PortMaster)
+        run: bash scripts/sync-resources.sh
+
+      - name: Sync themes
+        run: bash scripts/sync-themes.sh
+
       - name: Build image
         run: |
           sudo bash scripts/build.sh
