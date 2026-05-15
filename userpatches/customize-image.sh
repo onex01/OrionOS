@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  OrionOS customize-image.sh
-#  Place this file at: userpatches/customize-image.sh
 #
 #  Armbian calls this script automatically during image build, already inside
 #  the target rootfs chroot.  The $BOARD, $RELEASE, $DISTRIBUTION variables
