@@ -1,542 +1,540 @@
-#!/bin/bash
-# OrionOS customization script – v8.0 (Whitelist cores, BT fix, PortMaster SDL2, Tools)
-set -e
+#!/usr/bin/env bash
+# =============================================================================
+#  OrionOS customize-image.sh
+#  Place this file at: userpatches/customize-image.sh
+#
+#  Armbian calls this script automatically during image build, already inside
+#  the target rootfs chroot.  The $BOARD, $RELEASE, $DISTRIBUTION variables
+#  are exported by the build system.
+#
+#  Static files in userpatches/overlay/ are copied to / by Armbian BEFORE
+#  this script runs — so you can reference them directly.
+# =============================================================================
+set -euo pipefail
 
-LOGFILE="/var/log/orionos-build.log"
-exec > >(tee -a "$LOGFILE") 2>&1
+# ── Version (patched by CI) ───────────────────────────────────────────────────
+ORION_VERSION="0.1.0"
+ORION_USER="orion"
+ORION_ROMS_PATH="/roms"
 
-echo "=== OrionOS customization v8.0 started at $(date) ==="
+# ── Logging ───────────────────────────────────────────────────────────────────
+LOG="/var/log/orion-customize.log"
+exec > >(tee -a "$LOG") 2>&1
 
-mkdir -p /opt/orionos/{configs,tools}
+log()  { echo "[OrionOS][$(date +%H:%M:%S)] $*"; }
+warn() { echo "[OrionOS][WARN] $*" >&2; }
+die()  { echo "[OrionOS][ERROR] $*" >&2; exit 1; }
 
-# ---------- 1. GPU Mali G31 через Device Tree ----------
-echo "[1/19] Enabling GPU in device tree..."
-DTS_FILE=/boot/dtb/allwinner/sun50i-h618-orangepi-zero3.dtb
-if [ -f "$DTS_FILE" ]; then
-    dtc -I dtb -O dts "$DTS_FILE" -o /tmp/zero3.dts 2>/dev/null || true
-    if [ -f /tmp/zero3.dts ]; then
-        sed -i '/mali@/ { :a; /status/ s/disabled/okay/; /};/!{n; ba} }' /tmp/zero3.dts
-        dtc -I dts -O dtb /tmp/zero3.dts -o /tmp/zero3-fixed.dtb 2>/dev/null || true
-        cp /tmp/zero3-fixed.dtb "$DTS_FILE" 2>/dev/null || true
-        echo "GPU device tree patched."
-    fi
+# Non-fatal apt install — warns but doesn't abort the whole build
+apt_install() {
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" \
+        "$@" 2>&1 || warn "apt: some packages failed: $*"
+}
+
+log "=== OrionOS v${ORION_VERSION} customize-image.sh START ==="
+log "Board: ${BOARD:-unknown}  Release: ${RELEASE:-unknown}"
+
+# ── 0. Base packages ──────────────────────────────────────────────────────────
+log "Installing base packages..."
+apt-get update -qq
+apt_install \
+    curl wget ca-certificates \
+    sudo \
+    network-manager \
+    bluez bluez-tools \
+    alsa-utils \
+    python3 python3-evdev \
+    jq rsync \
+    exfatprogs dosfstools e2fsprogs \
+    zram-tools \
+    xserver-xorg-core xinit \
+    plymouth plymouth-themes
+
+# ── 1. User account ───────────────────────────────────────────────────────────
+log "Creating user ${ORION_USER}..."
+if ! id "$ORION_USER" &>/dev/null; then
+    useradd -m -s /bin/bash \
+        -G sudo,audio,video,input,plugdev,netdev,bluetooth,dialout \
+        "$ORION_USER"
 fi
+echo "${ORION_USER}:orion" | chpasswd
+passwd -e "$ORION_USER"   # force password change on first login
+echo "${ORION_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/orion
+chmod 0440 /etc/sudoers.d/orion
 
-if [ -f /tmp/overlay/boot/boot.bmp ]; then
-    cp /tmp/overlay/boot/boot.bmp /boot/boot.bmp 2>/dev/null || true
-fi
+# ── 2. Directories ────────────────────────────────────────────────────────────
+log "Creating ROM directories..."
+for sys in nes snes megadrive psx gba nds pce wonderswan ports saves states screenshots; do
+    mkdir -p "${ORION_ROMS_PATH}/${sys}"
+done
+mkdir -p /roms2 /etc/orion /var/lib/orion /usr/lib/orion
+chown -R "${ORION_USER}:${ORION_USER}" "${ORION_ROMS_PATH}"
 
-# ---------- 2. Базовые зависимости ----------
-echo "[2/19] Installing base dependencies..."
-apt-get update
+# ── 3. fstab optimisations ────────────────────────────────────────────────────
+log "Patching fstab..."
+sed -i 's|\(ext4\s\+\)defaults|\1defaults,noatime,lazytime,commit=60|' /etc/fstab || true
+# Disable SD-card swap; zram replaces it
+sed -i '/\bswap\b/d' /etc/fstab
+rm -f /var/swap
+systemctl disable dphys-swapfile 2>/dev/null || true
 
-# Mesa / GPU
-apt-get install -y mesa-utils libgles2-mesa-dev libegl1-mesa-dev libgl1-mesa-dri
-
-# X11 / DM
-apt-get install -y xserver-xorg xinit nodm
-
-# Сеть / BT
-apt-get install -y dialog bluetooth bluez bluez-tools network-manager wpasupplicant
-
-# Игровые / SDL2 (полный стек для PortMaster)
-apt-get install -y kbd openssh-server exfatprogs libsdl2-2.0-0 libsdl2-dev \
-    libsdl2-image-2.0-0 libsdl2-mixer-2.0-0 libsdl2-ttf-2.0-0 libsdl2-gfx-1.0-0 \
-    libsdl2-mixer-2.0-0 joystick xpad
-
-# Python
-apt-get install -y python3-pip python3-venv python3-sdl2
-
-# Plymouth
-apt-get install -y plymouth plymouth-themes
-
-if [ -f /tmp/overlay/boot/boot.bmp ]; then
-    cp /tmp/overlay/boot/boot.bmp /usr/share/plymouth/themes/spinner/background-tile.png 2>/dev/null || true
-fi
-plymouth-set-default-theme spinner -R
-
-mkdir -p /etc/plymouth
-cat > /etc/plymouth/plymouthd.conf << 'PLYCONF'
-[Daemon]
-Theme=spinner
-ShowDelay=0
-PLYCONF
-
-# ---------- 3. Модули ядра ----------
-echo "[3/19] Installing core modules..."
-mkdir -p /etc/modules-load.d
-cat > /etc/modules-load.d/gamepad.conf << 'MODCONF'
-joydev
-xpad
-hid-nintendo
-hid-sony
-MODCONF
-
-cat > /etc/modules-load.d/fs.conf << 'MODCONF'
+# ── 4. Kernel modules ─────────────────────────────────────────────────────────
+log "Configuring kernel modules..."
+cat > /etc/modules-load.d/orion.conf <<'EOF'
+panfrost
+gpu_sched
+hid_nintendo
+hid_sony
 ntfs3
-MODCONF
+exfat
+joydev
+uinput
+EOF
 
-cat > /etc/modules-load.d/sound.conf << 'MODCONF'
-snd-usb-audio
-MODCONF
+cat > /etc/modprobe.d/orion-hid.conf <<'EOF'
+options hid_nintendo jc_player_leds=1
+options hid_nintendo home_led_brightness=25
+EOF
 
-# ---------- 4. RetroArch ----------
-echo "[419] Installing RetroArch..."
-apt-get install -y retroarch libretro-*
+# ── 5. zram swap ─────────────────────────────────────────────────────────────
+log "Configuring zram..."
+cat > /etc/default/zramswap <<'EOF'
+ALGO=zstd
+SIZE=512
+PRIORITY=100
+EOF
 
-# ---------- 5. Whitelist ядра ----------
-echo "[5/19] Installing whitelisted libretro cores..."
-mkdir -p /usr/lib/aarch64-linux-gnu/libretro
+# ── 6. udev rules ─────────────────────────────────────────────────────────────
+log "Installing udev rules..."
+cat > /etc/udev/rules.d/60-orion-gpu.rules <<'EOF'
+SUBSYSTEM=="devfreq", KERNEL=="1800000.gpu", ATTR{governor}="simple_ondemand"
+EOF
 
-if [ -d /tmp/overlay/opt/orionos/cores ]; then
-    # Копируем только ядра из whitelist
-    if [ -f /tmp/overlay/opt/orionos/configs/cores-whitelist.txt ]; then
-        while IFS= read -r core; do
-            [[ "$core" =~ ^#.*$ ]] && continue
-            [[ -z "$core" ]] && continue
-            if [ -f "/tmp/overlay/opt/orionos/cores/$core" ]; then
-                cp "/tmp/overlay/opt/orionos/cores/$core" /usr/lib/aarch64-linux-gnu/libretro/
-                echo "  [+] $core"
-            else
-                echo "  [-] $core missing in overlay"
-            fi
-        done < /tmp/overlay/opt/orionos/configs/cores-whitelist.txt
-    else
-        echo "WARNING: cores-whitelist.txt not found, copying all cores..."
-        cp /tmp/overlay/opt/orionos/cores/*.so /usr/lib/aarch64-linux-gnu/libretro/ 2>/dev/null || true
-    fi
-    chmod 644 /usr/lib/aarch64-linux-gnu/libretro/*.so
-fi
+cat > /etc/udev/rules.d/61-orion-cpu.rules <<'EOF'
+SUBSYSTEM=="cpu", ACTION=="add|change", ATTR{cpufreq/scaling_governor}="schedutil"
+EOF
 
-# Удаляем лишние ядра из пакета retroarch (не из whitelist)
-if [ -f /tmp/overlay/opt/orionos/configs/cores-whitelist.txt ]; then
-    echo "[5b] Pruning system cores not in whitelist..."
-    WHITELIST=$(cat /tmp/overlay/opt/orionos/configs/cores-whitelist.txt | grep -v '^#' | grep -v '^$' | tr '\n' ' ')
-    for f in /usr/lib/aarch64-linux-gnu/libretro/*.so; do
-        [ -f "$f" ] || continue
-        core=$(basename "$f")
-        if ! echo "$WHITELIST" | grep -qw "$core"; then
-            echo "  [rm] $core"
-            rm -f "$f"
+cat > /etc/udev/rules.d/62-orion-thermal.rules <<'EOF'
+SUBSYSTEM=="thermal", KERNEL=="thermal_zone0", ATTR{policy}="step_wise"
+EOF
+
+cat > /etc/udev/rules.d/65-orion-usb-storage.rules <<'EOF'
+ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]", ENV{ID_BUS}=="usb", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="orion-usb-mount@%k.service"
+ACTION=="remove", SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]", ENV{ID_BUS}=="usb", \
+    RUN+="/bin/systemctl stop orion-usb-mount@%k.service"
+EOF
+
+# ── 7. RetroArch installation ─────────────────────────────────────────────────
+# Debian Bookworm minimal does NOT have RetroArch in the default repo.
+# We download the arm64 nightly binary from libretro.
+log "Installing RetroArch from libretro nightly..."
+
+RA_URL="https://buildbot.libretro.com/nightly/linux/aarch64/RetroArch.7z"
+RA_DEST="/usr/local/bin/retroarch"
+RA_ASSETS="/usr/share/retroarch"
+
+if command -v wget &>/dev/null; then
+    mkdir -p /tmp/ra-install
+    if wget -q --timeout=120 -O /tmp/ra-install/RetroArch.7z "$RA_URL" 2>/dev/null; then
+        apt_install p7zip-full
+        7z x /tmp/ra-install/RetroArch.7z -o/tmp/ra-install/ -y >/dev/null 2>&1 || true
+        # Find the retroarch binary
+        RA_BIN=$(find /tmp/ra-install -name "retroarch" -type f | head -1)
+        if [[ -n "$RA_BIN" ]]; then
+            install -m 755 "$RA_BIN" "$RA_DEST"
+            # Copy assets if present
+            RA_DATA=$(find /tmp/ra-install -name "retroarch" -type d | head -1)
+            [[ -n "$RA_DATA" ]] && cp -r "$RA_DATA" "$RA_ASSETS" || true
+            log "RetroArch installed: $($RA_DEST --version 2>&1 | head -1)"
+        else
+            warn "RetroArch binary not found in archive, trying apt fallback..."
+            apt_install retroarch || warn "RetroArch not available via apt either"
         fi
-    done
+        rm -rf /tmp/ra-install
+    else
+        warn "RetroArch download failed (no network?), trying apt..."
+        apt_install retroarch || warn "RetroArch not available"
+    fi
 fi
 
-# ---------- 6. EmulationStation ----------
-echo "[6/19] Building EmulationStation..."
-apt-get install -y libsdl2-dev libboost-system-dev libboost-filesystem-dev \
-    libboost-date-time-dev libboost-locale-dev libfreeimage-dev libfreetype6-dev \
-    libeigen3-dev libcurl4-openssl-dev libasound2-dev libgl1-mesa-dev \
-    build-essential cmake fonts-droid-fallback fonts-noto fonts-dejavu
+# ── 8. libretro cores ─────────────────────────────────────────────────────────
+log "Downloading libretro cores..."
+CORES_URL="https://buildbot.libretro.com/nightly/linux/aarch64/latest/"
+CORES_DEST="/usr/lib/libretro"
+mkdir -p "$CORES_DEST"
 
-cp -r /tmp/overlay/opt/orionos/sources/EmulationStation /tmp/EmulationStation
-sed -i '1s/^/#include <stack>\n/' /tmp/EmulationStation/es-app/src/views/gamelist/ISimpleGameListView.h
-sed -i '1s/^/#include <stack>\n/' /tmp/EmulationStation/es-app/src/views/gamelist/BasicGameListView.cpp
-cd /tmp/EmulationStation
-cmake . && make -j$(nproc) && make install
-cd / && rm -rf /tmp/EmulationStation
-
-# ---------- 7. Пользователь orion ----------
-echo "[7/19] Setting up user orion..."
-if id -u orion &>/dev/null; then
-    userdel -r orion 2>/dev/null || true
-    rm -rf /home/orion
-fi
-useradd -m -d /home/orion -s /bin/bash \
-    -G audio,video,input,dialout,netdev,bluetooth orion
-echo "orion:orion" | chpasswd
-if [ ! -d /home/orion ]; then
-    echo "ERROR: /home/orion does not exist after useradd!" >&2
-    exit 1
-fi
-chown -R orion:orion /home/orion
-
-# ---------- 8. PortMaster ----------
-echo "[8/19] Setting up PortMaster..."
-mkdir -p /roms/ports/PortMaster
-cp -r /tmp/overlay/opt/orionos/sources/PortMaster-GUI/* /roms/ports/PortMaster/ 2>/dev/null || true
-ln -sf /roms/ports/PortMaster /opt/portmaster 2>/dev/null || true
-chown -R orion:orion /roms/ports/PortMaster /opt/portmaster 2>/dev/null || true
-
-# Python SDL2 для PortMaster GUI
-pip3 install --break-system-packages pysdl2 pysdl2-dll 2>/dev/null || \
-    pip3 install pysdl2 pysdl2-dll 2>/dev/null || \
-    pip3 install PySDL2 2>/dev/null || true
-
-# Wrapper для запуска PortMaster
-mkdir -p /opt/orionos/tools
-cat > /opt/orionos/tools/launch-portmaster.sh << 'PMW'
-#!/bin/bash
-export SDL_VIDEODRIVER=x11
-export DISPLAY=:0
-cd /roms/ports/PortMaster || exit 1
-./PortMaster.sh
-PMW
-chmod +x /opt/orionos/tools/launch-portmaster.sh
-
-# Fake oga_events
-cat > /etc/systemd/system/oga_events.service << 'OGA'
-[Unit]
-Description=Fake OGA events service
-[Service]
-Type=oneshot
-ExecStart=/bin/true
-RemainAfterExit=yes
-[Install]
-WantedBy=multi-user.target
-OGA
-systemctl enable oga_events.service 2>/dev/null || true
-
-# ---------- 9. Игровые папки ----------
-echo "[9/19] Creating ROM directories..."
-ROMS_DIRS=(
-  nes snes n64 gb gbc gba nds pokemini virtualboy gw
-  megadrive mastersystem gamegear segacd sega32x sg-1000 dreamcast saturn segaarcade
-  psx psp
-  pcengine pcenginecd supergrafx
-  arcade mame neogeo neogeocd cps1 cps2 cps3
-  atari2600 atari5200 atari7800 atarilynx atari800 atarist
-  c64 c128 vic20 amiga amigacd32
-  dos msx msx2 zxspectrum amstradcpc
-  odyssey2 intellivision colecovision vectrex
-  wonderswan wonderswancolor ngp ngpc supervision
-  3do cdi
-  doom quake scummvm easyrpg cavestory wolf3d xrick cannonball
-  pico8 tic80 lowresnx vircon32 wasm4
-  ports
+CORES=(
+    "nestopia_libretro"       # NES
+    "snes9x_libretro"         # SNES
+    "genesis_plus_gx_libretro" # Mega Drive
+    "pcsx_rearmed_libretro"   # PlayStation
+    "mgba_libretro"           # GBA
+    "melonds_libretro"        # NDS
+    "mednafen_pce_libretro"   # PC Engine
+    "mednafen_wswan_libretro" # WonderSwan
 )
-mkdir -p /roms
-for d in "${ROMS_DIRS[@]}"; do
-    mkdir -p "/roms/$d"
-done
-chown -R orion:orion /roms
-mkdir -p /roms2
 
-# ---------- 10. Конфиги ES ----------
-echo "[10/10] Installing ES configs..."
-mkdir -p /home/orion/.emulationstation
-
-# Копируем полный конфиг из overlay (если есть)
-if [ -f /tmp/overlay/opt/orionos/configs/es_systems.cfg ]; then
-    cp /tmp/overlay/opt/orionos/configs/es_systems.cfg /opt/orionos/configs/
-    cp /tmp/overlay/opt/orionos/configs/es_systems.cfg /home/orion/.emulationstation/
-fi
-if [ -f /tmp/overlay/opt/orionos/configs/es_input.cfg ]; then
-    cp /tmp/overlay/opt/orionos/configs/es_input.cfg /opt/orionos/configs/
-    cp /tmp/overlay/opt/orionos/configs/es_input.cfg /home/orion/.emulationstation/
-fi
-
-cat > /home/orion/.emulationstation/es_settings.cfg << 'ESET'
-<?xml version="1.0"?>
-<bool name="ClockMode12" value="false" />
-<bool name="DrawClock" value="false" />
-<bool name="FavoritesFirst" value="false" />
-<bool name="QuickSystemSelect" value="false" />
-<bool name="ScrapeVideos" value="true" />
-<bool name="ScreenSaverMarquee" value="false" />
-<int name="MaxVRAM" value="150" />
-<int name="gba.sort" value="3" />
-<int name="nes.sort" value="0" />
-<int name="snes.sort" value="0" />
-<string name="CollectionSystemsAuto" value="all,favorites" />
-<string name="FolderViewMode" value="always" />
-<string name="HiddenSystems" value="" />
-<string name="Language" value="ru" />
-<string name="LogLevel" value="disabled" />
-<string name="SaveGamelistsMode" value="on exit" />
-<string name="ScrapperRegionSrc" value="EU" />
-<string name="ScreenSaverBehavior" value="random video" />
-<string name="ScreenSaverGameInfo" value="always" />
-<string name="ThemeRegionName" value="" />
-<string name="ThemeSet" value="carbon" />
-<string name="TransitionStyle" value="slide" />
-<string name="VerbalBatteryWarning" value="no" />
-ESET
-
-touch /home/orion/.emulationstation/es_input.cfg
-chown -R orion:orion /home/orion/.emulationstation
-chmod 644 /home/orion/.emulationstation/es_systems.cfg 2>/dev/null || true
-chmod 644 /home/orion/.emulationstation/es_settings.cfg
-chmod 755 /home/orion/.emulationstation
-
-# ---------- 11. Тема ----------
-echo "[11/19] Installing ES themes..."
-mkdir -p /home/orion/.emulationstation/themes
-if [ -d /tmp/overlay/opt/orionos/sources/es-theme-carbon ]; then
-    cp -r /tmp/overlay/opt/orionos/sources/es-theme-carbon /home/orion/.emulationstation/themes/carbon
-    chown -R orion:orion /home/orion/.emulationstation/themes
-fi
-
-# ---------- 12. Автомонтирование ----------
-echo "[12/19] Installing automount script..."
-cat > /etc/udev/rules.d/99-external-storage.rules << 'UDEV'
-ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]", RUN+="/usr/local/bin/automount.sh %k"
-UDEV
-
-cat > /usr/local/bin/automount.sh << 'AUTOMOUNT'
-#!/bin/bash
-DEVNAME=$1
-MNTPOINT="/roms2/${DEVNAME}"
-mkdir -p "$MNTPOINT"
-mount /dev/${DEVNAME} "$MNTPOINT" 2>/dev/null || { rmdir "$MNTPOINT"; exit 1; }
-chown -R orion:orion "$MNTPOINT"
-DIRS=( nes snes megadrive mastersystem gamegear psx gb gbc gba pcengine virtualboy wonderswan nds ports )
-for d in "${DIRS[@]}"; do
-    mkdir -p "$MNTPOINT/$d"
-    chown orion:orion "$MNTPOINT/$d"
-    [ ! -e "/roms/${DEVNAME}-$d" ] && ln -sf "$MNTPOINT/$d" "/roms/${DEVNAME}-$d"
-done
-AUTOMOUNT
-chmod +x /usr/local/bin/automount.sh
-
-# ---------- 13. Скрипты Ports ----------
-echo "[13/19] Installing ports script..."
-cat > /roms/ports/Browser.sh << 'BROWSER'
-#!/bin/bash
-onboard &
-firefox-esr
-BROWSER
-chmod +x /roms/ports/Browser.sh
-chown orion:orion /roms/ports/Browser.sh
-
-cat > /roms/ports/WiFi_Setup.sh << 'WIFI'
-#!/bin/bash
-sudo nmtui
-WIFI
-chmod +x /roms/ports/WiFi_Setup.sh
-chown orion:orion /roms/ports/WiFi_Setup.sh
-
-cat > /roms/ports/Desktop.sh << 'DESKTOP'
-#!/bin/bash
-if ! sudo -n true 2>/dev/null; then
-    dialog --msgbox "A root password is required. Please set one now." 6 50
-    sudo passwd root
-fi
-pkill -f emulationstation
-sleep 1
-startxfce4
-DESKTOP
-chmod +x /roms/ports/Desktop.sh
-chown orion:orion /roms/ports/Desktop.sh
-
-cat > /roms/ports/Rescan_Bluetooth.sh << 'RESCAN'
-#!/bin/bash
-dialog --title "Bluetooth" --infobox "Restarting Bluetooth scan..." 5 40
-sudo systemctl restart bt-autopair.service
-sleep 2
-dialog --title "Bluetooth" --msgbox "Bluetooth scan restarted.\\n\\nPut your controller in pairing mode (hold Sync button)." 10 50
-RESCAN
-chmod +x /roms/ports/Rescan_Bluetooth.sh
-chown orion:orion /roms/ports/Rescan_Bluetooth.sh
-
-cat > /roms/ports/Format-USB.sh << 'FORMAT'
-#!/bin/bash
-DEVS=$(lsblk -o NAME,SIZE,TYPE,MOUNTPOINT | grep disk | grep -v "mmcblk0" | awk '{print "/dev/"$1, $2}')
-[ -z "$DEVS" ] && dialog --msgbox "No external disks found." 5 40 && exit 1
-TMPFILE=$(mktemp)
-dialog --title "Select Disk" --menu "Choose a disk:" 12 60 6 $DEVS 2> $TMPFILE
-DISK=$(cat $TMPFILE); rm -f $TMPFILE
-[ -z "$DISK" ] && exit 0
-dialog --yesno "All data on $DISK will be lost! Continue?" 6 50 || exit 0
-dialog --menu "Filesystem:" 10 40 2 exfat "exFAT" ext4 "ext4" 2> $TMPFILE
-FS=$(cat $TMPFILE); rm -f $TMPFILE
-[ -z "$FS" ] && exit 0
-dialog --menu "Partition size:" 10 40 2 full "Entire disk" custom "Specify MB" 2> $TMPFILE
-SIZEOPT=$(cat $TMPFILE); rm -f $TMPFILE
-[ -z "$SIZEOPT" ] && exit 0
-if [ "$SIZEOPT" = "custom" ]; then
-    dialog --inputbox "Size in MB:" 8 40 2> $TMPFILE
-    SIZE=$(cat $TMPFILE); rm -f $TMPFILE
-    [ -z "$SIZE" ] && exit 0
-fi
-umount ${DISK}* 2>/dev/null || true
-echo -e "o\\nn\\np\\n1\\n\\n${SIZE:++${SIZE}M}\\nw" | fdisk "$DISK"
-sleep 1
-PART="${DISK}1"
-mkfs.$FS -I "$PART"
-echo "Done. Reconnect to mount."
-FORMAT
-chmod +x /roms/ports/Format-USB.sh
-chown orion:orion /roms/ports/Format-USB.sh
-
-# ---------- 14. Bluetooth (улучшенный) ----------
-echo "[14/19] Setting up Bluetooth..."
-
-# BlueZ main.conf из overlay
-if [ -f /tmp/overlay/etc/bluetooth/main.conf ]; then
-    mkdir -p /etc/bluetooth
-    cp /tmp/overlay/etc/bluetooth/main.conf /etc/bluetooth/main.conf
-fi
-
-# Скрипт автопейринга из overlay
-if [ -f /tmp/overlay/usr/local/bin/bt-pair-gamepad.sh ]; then
-    cp /tmp/overlay/usr/local/bin/bt-pair-gamepad.sh /usr/local/bin/bt-pair-gamepad.sh
-else
-    cat > /usr/local/bin/bt-pair-gamepad.sh << 'BTPAIR'
-#!/bin/bash
-export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
-
-while ! bluetoothctl show &>/dev/null; do
-    sleep 2
+for core in "${CORES[@]}"; do
+    core_url="${CORES_URL}${core}.so.zip"
+    if wget -q --timeout=60 -O "/tmp/${core}.zip" "$core_url" 2>/dev/null; then
+        unzip -o -q "/tmp/${core}.zip" -d "$CORES_DEST" 2>/dev/null || true
+        rm -f "/tmp/${core}.zip"
+        log "Core installed: ${core}"
+    else
+        warn "Core download failed: ${core}"
+    fi
 done
 
-bluetoothctl power on
-bluetoothctl agent NoInputNoOutput
-bluetoothctl default-agent
-bluetoothctl pairable on
-bluetoothctl discoverable on
-
-while true; do
-    timeout 30 bluetoothctl scan on >/dev/null 2>&1
-    sleep 2
-    bluetoothctl devices Paired | while read -r _ MAC _; do
-        [ -n "$MAC" ] && bluetoothctl connect "$MAC" 2>/dev/null
-    done
-    sleep 15
-done
-BTPAIR
+# ── 9. EmulationStation ────────────────────────────────────────────────────────
+log "Installing EmulationStation..."
+# Try apt first (works on some Armbian releases), then GitHub release
+if ! apt_install emulationstation emulationstation-de 2>/dev/null; then
+    # Fallback: build from source or use pre-built binary
+    # For now, create a placeholder that can be replaced
+    warn "EmulationStation not found in apt — will need manual install or custom package"
 fi
-chmod +x /usr/local/bin/bt-pair-gamepad.sh
 
-cat > /etc/systemd/system/bt-autopair.service << 'BTSVC'
+# ES configuration
+mkdir -p /etc/emulationstation /home/${ORION_USER}/.emulationstation
+
+cat > /etc/emulationstation/es_systems.xml << 'ESXML'
+<?xml version="1.0" encoding="UTF-8"?>
+<systemList>
+  <system>
+    <name>nes</name><fullname>Nintendo Entertainment System</fullname>
+    <path>/roms/nes</path>
+    <extension>.nes .NES .zip .ZIP .7z</extension>
+    <command>retroarch -L /usr/lib/libretro/nestopia_libretro.so %ROM%</command>
+    <platform>nes</platform><theme>nes</theme>
+  </system>
+  <system>
+    <name>snes</name><fullname>Super Nintendo</fullname>
+    <path>/roms/snes</path>
+    <extension>.smc .sfc .SMC .SFC .zip .ZIP</extension>
+    <command>retroarch -L /usr/lib/libretro/snes9x_libretro.so %ROM%</command>
+    <platform>snes</platform><theme>snes</theme>
+  </system>
+  <system>
+    <name>megadrive</name><fullname>Sega Mega Drive</fullname>
+    <path>/roms/megadrive</path>
+    <extension>.md .gen .bin .MD .GEN .zip .ZIP</extension>
+    <command>retroarch -L /usr/lib/libretro/genesis_plus_gx_libretro.so %ROM%</command>
+    <platform>megadrive</platform><theme>megadrive</theme>
+  </system>
+  <system>
+    <name>psx</name><fullname>Sony PlayStation</fullname>
+    <path>/roms/psx</path>
+    <extension>.bin .cue .img .iso .pbp .chd</extension>
+    <command>retroarch -L /usr/lib/libretro/pcsx_rearmed_libretro.so %ROM%</command>
+    <platform>psx</platform><theme>psx</theme>
+  </system>
+  <system>
+    <name>gba</name><fullname>Game Boy Advance</fullname>
+    <path>/roms/gba</path>
+    <extension>.gba .GBA .zip .ZIP</extension>
+    <command>retroarch -L /usr/lib/libretro/mgba_libretro.so %ROM%</command>
+    <platform>gba</platform><theme>gba</theme>
+  </system>
+  <system>
+    <name>nds</name><fullname>Nintendo DS</fullname>
+    <path>/roms/nds</path>
+    <extension>.nds .NDS .zip .ZIP</extension>
+    <command>retroarch -L /usr/lib/libretro/melonds_libretro.so %ROM%</command>
+    <platform>nds</platform><theme>nds</theme>
+  </system>
+  <system>
+    <name>pce</name><fullname>PC Engine</fullname>
+    <path>/roms/pce</path>
+    <extension>.pce .PCE .zip .ZIP</extension>
+    <command>retroarch -L /usr/lib/libretro/mednafen_pce_libretro.so %ROM%</command>
+    <platform>pcengine</platform><theme>pcengine</theme>
+  </system>
+  <system>
+    <name>ports</name><fullname>Ports</fullname>
+    <path>/roms/ports</path>
+    <extension>.sh .SH</extension>
+    <command>bash %ROM%</command>
+    <platform>ports</platform><theme>ports</theme>
+  </system>
+</systemList>
+ESXML
+
+# ── 10. RetroArch global config ───────────────────────────────────────────────
+log "Writing RetroArch config..."
+mkdir -p /etc/retroarch /etc/retroarch/config
+
+cat > /etc/retroarch/retroarch.cfg << 'RACFG'
+video_driver = "gl"
+video_fullscreen = "true"
+video_threaded = "true"
+video_vsync = "true"
+video_scale_integer = "true"
+video_aspect_ratio_auto = "true"
+audio_driver = "alsa"
+audio_latency = "64"
+audio_rate_control = "true"
+input_driver = "udev"
+input_max_users = "4"
+input_autodetect_enable = "true"
+savefile_directory = "/roms/saves"
+savestate_directory = "/roms/states"
+screenshot_directory = "/roms/screenshots"
+menu_driver = "ozone"
+rewind_enable = "false"
+RACFG
+
+# Per-system configs
+echo 'rewind_enable = "true"'  > /etc/retroarch/config/Nestopia.cfg
+echo 'rewind_enable = "true"'  > /etc/retroarch/config/Snes9x.cfg
+echo 'rewind_enable = "true"'  > "/etc/retroarch/config/Genesis Plus GX.cfg"
+printf 'rewind_enable = "false"\nvideo_scale_integer = "false"\n' > /etc/retroarch/config/PCSX-ReARMed.cfg
+echo 'rewind_enable = "true"'  > /etc/retroarch/config/mGBA.cfg
+
+# ── 11. PortMaster ────────────────────────────────────────────────────────────
+log "Installing PortMaster stubs..."
+cat > /usr/lib/orion/oga-events.py << 'OGA'
+#!/usr/bin/env python3
+"""OrionOS oga_events — evdev gamepad translator for PortMaster"""
+import asyncio, evdev, signal, sys, logging
+from evdev import ecodes as e, UInput
+
+logging.basicConfig(format="%(asctime)s [oga_events] %(message)s", level=logging.INFO)
+log = logging.getLogger()
+
+BUTTON_MAP = {
+    e.BTN_SOUTH: e.KEY_X,    e.BTN_EAST: e.KEY_Z,
+    e.BTN_NORTH: e.KEY_S,    e.BTN_WEST: e.KEY_A,
+    e.BTN_TL:    e.KEY_E,    e.BTN_TR:   e.KEY_T,
+    e.BTN_SELECT: e.KEY_RIGHTCTRL, e.BTN_START: e.KEY_ENTER,
+    e.BTN_MODE:  e.KEY_ESC,
+}
+
+def find_gamepad():
+    for path in evdev.list_devices():
+        try:
+            d = evdev.InputDevice(path)
+            if e.EV_KEY in d.capabilities() and e.BTN_SOUTH in d.capabilities()[e.EV_KEY]:
+                return d
+        except Exception: pass
+    return None
+
+async def main():
+    gp = None
+    while not gp:
+        gp = find_gamepad()
+        if not gp:
+            await asyncio.sleep(5)
+    log.info(f"Gamepad: {gp.name}")
+    ui = UInput({e.EV_KEY: list(BUTTON_MAP.values())}, name="orion-oga-events")
+    signal.signal(signal.SIGTERM, lambda *_: (ui.close(), sys.exit(0)))
+    async for ev in gp.async_read_loop():
+        if ev.type == e.EV_KEY and ev.code in BUTTON_MAP:
+            ui.write(e.EV_KEY, BUTTON_MAP[ev.code], ev.value); ui.syn()
+
+asyncio.run(main())
+OGA
+chmod +x /usr/lib/orion/oga-events.py
+
+# ── 12. systemd services ───────────────────────────────────────────────────────
+log "Installing systemd services..."
+
+# EmulationStation autostart
+cat > /etc/systemd/system/emulationstation.service << EOF
 [Unit]
-Description=Bluetooth auto-pair and connect
-After=bluetooth.service dbus.service
-Wants=bluetooth.service
+Description=EmulationStation
+After=multi-user.target sound.target
+
 [Service]
-Type=simple
-User=root
-Environment="DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket"
-ExecStart=/usr/local/bin/bt-pair-gamepad.sh
-Restart=on-failure
-RestartSec=10
+User=${ORION_USER}
+Environment=HOME=/home/${ORION_USER}
+ExecStart=/usr/bin/emulationstation
+Restart=always
+RestartSec=3
+TTYPath=/dev/tty1
+StandardInput=tty
+
 [Install]
 WantedBy=multi-user.target
-BTSVC
-systemctl enable bt-autopair.service 2>/dev/null || true
-usermod -a -G bluetooth orion
+EOF
 
-# ---------- 15. Firstboot ----------
-echo "[15/19] Installing firstboot script..."
-if [ -f /tmp/overlay/opt/orionos/firstboot.sh ]; then
-    cp /tmp/overlay/opt/orionos/firstboot.sh /opt/orionos/firstboot.sh
-else
-    cat > /opt/orionos/firstboot.sh << 'FIRSTBOOT'
-#!/bin/bash
-modprobe joydev 2>/dev/null || true
-modprobe hid-nintendo 2>/dev/null || true
-modprobe hid-sony 2>/dev/null || true
-
-if ! id -u orion &>/dev/null; then
-    useradd -m -d /home/orion -s /bin/bash -G audio,video,input,dialout,netdev,bluetooth orion
-    echo "orion:orion" | chpasswd
-fi
-mkdir -p /home/orion/.emulationstation /home/orion/.config/retroarch /roms /roms2
-
-if [ -f /home/orion/.xsession ]; then
-    plymouth quit 2>/dev/null || true
-    exec emulationstation
-fi
-chown -R orion:orion /home/orion /roms /roms2 /opt/portmaster 2>/dev/null || true
-systemctl disable orionos-firstboot.service 2>/dev/null || true
-rm -f /opt/orionos/firstboot.sh
-FIRSTBOOT
-fi
-chmod +x /opt/orionos/firstboot.sh
-
-cat > /etc/systemd/system/orionos-firstboot.service << 'SERVICE'
+# oga_events
+cat > /etc/systemd/system/oga-events.service << 'EOF'
 [Unit]
-Description=OrionOS First Boot Setup
-After=multi-user.target
-Before=display-manager.service
-ConditionPathExists=/opt/orionos/firstboot.sh
+Description=OrionOS oga_events gamepad translator
+After=systemd-udev-settle.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/lib/orion/oga-events.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# USB mount template
+cat > /etc/systemd/system/orion-usb-mount@.service << 'EOF'
+[Unit]
+Description=OrionOS USB ROM mount for %i
+After=local-fs.target
+
 [Service]
 Type=oneshot
-ExecStart=/opt/orionos/firstboot.sh
 RemainAfterExit=yes
+ExecStart=/usr/lib/orion/mount-usb.sh %i add
+ExecStop=/usr/lib/orion/mount-usb.sh %i remove
+EOF
+
+# Bluetooth gamepad
+cat > /etc/systemd/system/orion-bluetooth.service << 'EOF'
+[Unit]
+Description=OrionOS BT Gamepad Auto-Pairing
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+ExecStart=/usr/lib/orion/bt-gamepad.sh
+Restart=always
+RestartSec=10
+
 [Install]
 WantedBy=multi-user.target
-SERVICE
-systemctl enable orionos-firstboot.service
+EOF
 
-# ---------- 16. RetroArch конфиг ----------
-echo "[16/19] RetroArch config..."
-mkdir -p /home/orion/.config/retroarch
-cat > /home/orion/.config/retroarch/retroarch.cfg << 'RACFG'
-video_driver = "gl"
-video_threaded = "true"
-video_vsync = "false"
-video_max_swapchain_images = "2"
-video_scale_integer = "false"
-video_smooth = "false"
-video_force_aspect = "true"
-video_aspect_ratio_auto = "true"
-video_shader_enable = "false"
-audio_driver = "alsa"
-audio_enable = "true"
-audio_out_rate = "48000"
-input_driver = "udev"
-input_joypad_driver = "udev"
-menu_swap_ok_cancel_buttons = "false"
-savestate_directory = "~/.config/retroarch/savestates"
-savefile_directory = "~/.config/retroarch/saves"
-cheat_database_path = "~/.config/retroarch/cheats"
-system_directory = "~/.config/retroarch/system"
-assets_directory = "/usr/share/libretro/assets"
-RACFG
-chown -R orion:orion /home/orion/.config/retroarch
+# USB mount script
+cat > /usr/lib/orion/mount-usb.sh << 'MOUNT'
+#!/usr/bin/env bash
+set -euo pipefail
+DEV="${1:?}"; ACTION="${2:-add}"
+MOUNT_BASE="/roms2"; MOUNT_PT="${MOUNT_BASE}/${DEV}"; DEVPATH="/dev/${DEV}"
+ORION_USER="orion"
 
-# ---------- 17. Инструменты OrionOS ----------
-echo "[17/19] Installing OrionOS tools..."
-if [ -d /tmp/overlay/opt/orionos/tools ]; then
-    cp -r /tmp/overlay/opt/orionos/tools/* /opt/orionos/tools/ 2>/dev/null || true
+if [[ "$ACTION" == "remove" ]]; then
+    umount -l "$MOUNT_PT" 2>/dev/null || true; rmdir "$MOUNT_PT" 2>/dev/null || true; exit 0
 fi
-chmod +x /opt/orionos/tools/*.sh 2>/dev/null || true
+[[ -b "$DEVPATH" ]] || exit 1
 
-# ---------- 18. Флаг resize + чистка ----------
-echo "[18/19] Final cleanup..."
-touch /opt/orionos/.resize-needed
+FSTYPE=$(blkid -o value -s TYPE "$DEVPATH" 2>/dev/null || echo "auto")
+UID_VAL=$(id -u "$ORION_USER" 2>/dev/null || echo 1000)
+GID_VAL=$(id -g "$ORION_USER" 2>/dev/null || echo 1000)
+mkdir -p "$MOUNT_PT"
 
-# Маскируем armbian-firstrun полностью
-systemctl mask armbian-firstrun.service 2>/dev/null || true
-systemctl disable console-setup.service 2>/dev/null || true
-apt-get purge -y --allow-remove-essential man-db manpages manpages-dev \
-    debian-faq doc-debian info iptables ppp modemmanager 2>/dev/null || true
-apt-get autoremove -y || true
-apt-get clean
-rm -rf /var/lib/apt/lists/*
-rm -rf /usr/share/doc/*
-rm -rf /usr/share/man/*
-rm -rf /usr/share/info/*
-rm -rf /usr/share/locale/??_?? 2>/dev/null || true
+case "$FSTYPE" in
+    vfat|fat32) OPTS="rw,noatime,uid=${UID_VAL},gid=${GID_VAL},fmask=0022,dmask=0022" ;;
+    exfat)      OPTS="rw,noatime,uid=${UID_VAL},gid=${GID_VAL},fmask=0022,dmask=0022" ;;
+    ntfs)       OPTS="rw,noatime,uid=${UID_VAL},gid=${GID_VAL}"; FSTYPE="ntfs3" ;;
+    *)          OPTS="rw,noatime" ;;
+esac
 
-# Удаляем firmware для ненужных GPU
-rm -rf /lib/firmware/{amdgpu,i915,nvidia,radeon} 2>/dev/null || true
+mount -t "$FSTYPE" -o "$OPTS" "$DEVPATH" "$MOUNT_PT" 2>/dev/null || \
+    mount -o "ro,noatime" "$DEVPATH" "$MOUNT_PT" 2>/dev/null || \
+    { rmdir "$MOUNT_PT"; exit 1; }
 
-# Очистка кэшей
-rm -rf /var/cache/* /tmp/* /var/tmp/*
+# Symlink rom subdirs
+[[ -d "${MOUNT_PT}/roms" ]] && for d in "${MOUNT_PT}/roms"/*/; do
+    sys="$(basename "$d")"
+    [[ ! -e "/roms/${sys}" ]] && ln -sfn "$d" "/roms/${sys}" || true
+done
+logger -t orion-usb "Mounted ${DEV} (${FSTYPE}) at ${MOUNT_PT}"
+MOUNT
+chmod +x /usr/lib/orion/mount-usb.sh
 
-# ---------- 19. Имя хоста и загрузка ----------
-echo "[19/19] Finalizing..."
-apt-get purge -y armbian-firstrun-config &>/dev/null || true
-rm -f /etc/profile.d/armbian-check-first-login.sh
-rm -f /etc/profile.d/armbian-check-first-login-reboot.sh
-echo "OrionOS" > /etc/hostname
-sed -i 's/127.0.1.1.*/127.0.1.1\tOrionOS/' /etc/hosts
-hostnamectl set-hostname OrionOS || true
+# BT gamepad script
+cat > /usr/lib/orion/bt-gamepad.sh << 'BT'
+#!/usr/bin/env bash
+set -euo pipefail
+KNOWN="/var/lib/orion/bt-known"; mkdir -p /var/lib/orion; touch "$KNOWN"
 
-# extraargs
-if grep -q 'extraargs=' /boot/armbianEnv.txt; then
-    sed -i 's/^extraargs=.*/extraargs=systemd.show_status=0 vt_global_cursor_default=0 quiet consoleblank=0 loglevel=3 splash plymouth.ignore-serial-consoles/' /boot/armbianEnv.txt
-else
-    echo 'extraargs=systemd.show_status=0 vt_global_cursor_default=0 quiet consoleblank=0 loglevel=3 splash plymouth.ignore-serial-consoles' >> /boot/armbianEnv.txt
-fi
+bluetoothctl power on 2>/dev/null || true
+bluetoothctl agent NoInputNoOutput 2>/dev/null || true
+bluetoothctl default-agent 2>/dev/null || true
+bluetoothctl pairable on 2>/dev/null || true
 
-# Wi-Fi
-systemctl enable NetworkManager 2>/dev/null || true
+# Reconnect known devices on startup
+while IFS=' ' read -r mac _rest; do
+    [[ -n "$mac" ]] && bluetoothctl connect "$mac" 2>/dev/null || true
+done < "$KNOWN"
 
-# Финальная чистка
-apt-get clean
-rm -rf /var/lib/apt/lists/*
+# Continuous scan loop
+while true; do
+    bluetoothctl scan on & SCAN=$!; sleep 30; kill $SCAN 2>/dev/null || true
+    bluetoothctl scan off 2>/dev/null || true
+    while IFS= read -r line; do
+        mac=$(echo "$line" | grep -oE '([0-9A-F]{2}:){5}[0-9A-F]{2}' || true)
+        [[ -z "$mac" ]] || grep -qiF "$mac" "$KNOWN" && continue
+        cls=$(bluetoothctl info "$mac" 2>/dev/null | awk '/Class:/{print $2}' || echo "")
+        [[ -z "$cls" ]] && continue
+        cls_int=$(( 16#${cls//0x/} ))
+        (( (cls_int & 0x1F00) == 0x0500 )) || continue
+        name=$(bluetoothctl info "$mac" 2>/dev/null | awk '/Name:/{$1="";print}' | xargs || echo "Gamepad")
+        bluetoothctl pair "$mac" 2>/dev/null && bluetoothctl trust "$mac" 2>/dev/null \
+            && bluetoothctl connect "$mac" 2>/dev/null && echo "$mac $name" >> "$KNOWN" \
+            && logger -t orion-bt "Paired: $name ($mac)"
+    done < <(bluetoothctl devices 2>/dev/null || true)
+    sleep 10
+done
+BT
+chmod +x /usr/lib/orion/bt-gamepad.sh
 
-echo "=== OrionOS v8.0 customization finished at $(date) ==="
+# ── 13. Enable services ────────────────────────────────────────────────────────
+log "Enabling services..."
+systemctl enable emulationstation.service 2>/dev/null || true
+systemctl enable oga-events.service        2>/dev/null || true
+systemctl enable orion-bluetooth.service   2>/dev/null || true
+systemctl enable bluetooth.service         2>/dev/null || true
+systemctl enable NetworkManager.service    2>/dev/null || true
+systemctl disable getty@tty1.service       2>/dev/null || true
+
+# ── 14. Ports menu shortcuts ───────────────────────────────────────────────────
+log "Creating Ports shortcuts..."
+mkdir -p /roms/ports
+
+cat > "/roms/ports/WiFi Setup.sh"    <<'P'; chmod +x "/roms/ports/WiFi Setup.sh"
+#!/usr/bin/env bash
+nmtui-connect
+P
+
+cat > "/roms/ports/System Info.sh"   <<'P'; chmod +x "/roms/ports/System Info.sh"
+#!/usr/bin/env bash
+source /etc/orion/release 2>/dev/null || true
+TEMP=$(cat /run/orion/cpu_temp 2>/dev/null || echo "?")
+echo "OrionOS ${ORION_VERSION:-?} | CPU: ${TEMP}°C | $(uptime -p)"
+echo "ROM: $(df -h /roms | awk 'NR==2{print $3"/"$2}')"
+read -rp "Press Enter..."
+P
+
+cat > "/roms/ports/Check for Updates.sh" <<'P'; chmod +x "/roms/ports/Check for Updates.sh"
+#!/usr/bin/env bash
+echo "Checking for OrionOS updates..."
+LATEST=$(curl -sf --max-time 10 \
+    "https://api.github.com/repos/onex01/OrionOS/releases/latest" \
+    | grep '"tag_name"' | cut -d'"' -f4 || echo "?")
+echo "Latest: ${LATEST}. Visit github.com/onex01/OrionOS/releases"
+read -rp "Press Enter..."
+P
+
+chown -R "${ORION_USER}:${ORION_USER}" /roms
+
+# ── 15. Runtime tmpdir ────────────────────────────────────────────────────────
+cat > /etc/tmpfiles.d/orion.conf <<'EOF'
+d /run/orion 0755 root root -
+EOF
+
+# ── 16. Release metadata ──────────────────────────────────────────────────────
+cat > /etc/orion/release << EOF
+ORION_VERSION="${ORION_VERSION}"
+ORION_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+ORION_BOARD="${BOARD:-orangepizero3}"
+EOF
+
+# ── Cleanup ───────────────────────────────────────────────────────────────────
+log "Cleaning up..."
+apt-get autoremove -y -qq 2>/dev/null || true
+apt-get clean 2>/dev/null || true
+rm -rf /var/lib/apt/lists/* /tmp/ra-install /tmp/*.zip
+
+log "=== OrionOS customize-image.sh DONE ==="
+log "Build log: ${LOG}"

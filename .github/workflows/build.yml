@@ -1,45 +1,83 @@
-name: OrionOS Build
+name: Build OrionOS Image
 
 on:
   push:
-    branches: [ main ]
+    tags:
+      - 'v*'
   workflow_dispatch:
+    inputs:
+      release_distro:
+        description: 'Distro release (bookworm / trixie / noble)'
+        required: false
+        default: 'bookworm'
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    name: Build OrionOS for Orange Pi Zero 3
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install deps
+      - name: Validate userpatches structure
         run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-user-static binfmt-support qemu-utils parted
+          echo "=== Checking critical files ==="
+          [[ -f userpatches/customize-image.sh ]] \
+            && echo "✓ userpatches/customize-image.sh" \
+            || { echo "✗ MISSING: userpatches/customize-image.sh"; exit 1; }
 
-      - name: Sync cores
-        run: bash scripts/sync-cores.sh
-
-      - name: Prune cores
-        run: bash scripts/prune-cores.sh
-
-      - name: Sync resources (ES + PortMaster)
-        run: bash scripts/sync-resources.sh
-
-      - name: Sync themes
-        run: bash scripts/sync-themes.sh
-
-      - name: Build image
+      - name: Determine version
+        id: version
         run: |
-          sudo bash scripts/build.sh
-        env:
-          BOARD: orangepizero3
-          RELEASE: bookworm
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          elif [[ -f orion.conf ]]; then
+            VERSION=$(grep '^ORION_VERSION' orion.conf | head -1 | cut -d'"' -f2)
+            VERSION="${VERSION:-0.1.0}-dev.$(git rev-parse --short HEAD)"
+          else
+            VERSION="0.1.0-dev.$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building OrionOS v${VERSION}"
 
-      - name: Compress
-        run: bash scripts/compress.sh armbian-build/output/images/*.img
+      - name: Patch version into userpatches
+        run: |
+          sed -i "s/ORION_VERSION=.*/ORION_VERSION=\"${{ steps.version.outputs.version }}\"/" \
+              userpatches/customize-image.sh 2>/dev/null || true
+          [[ -f orion.conf ]] && \
+            sed -i "s/^ORION_VERSION=.*/ORION_VERSION=\"${{ steps.version.outputs.version }}\"/" orion.conf || true
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      # THE FIX: use armbian/build@main action with armbian_runner_clean: "yes"
+      # This frees ~25GB on GitHub runners (removes Android SDK, .NET, Java, etc.)
+      # The action auto-detects userpatches/ and merges it into the build.
+      - name: Build image via official Armbian Action
+        uses: armbian/build@main
         with:
-          name: OrionOS-image
-          path: armbian-build/output/images/*.img.tar.xz
+          armbian_token:          "${{ secrets.GITHUB_TOKEN }}"
+          armbian_board:          "orangepizero3"
+          armbian_kernel_branch:  "current"
+          armbian_release:        "${{ github.event.inputs.release_distro || 'bookworm' }}"
+          armbian_target:         "build"
+          armbian_ui:             "minimal"
+          armbian_compress:       "sha,img,xz"
+          armbian_runner_clean:   "yes"
+          armbian_release_title:  "OrionOS v${{ steps.version.outputs.version }}"
+          armbian_release_body: |
+            ## OrionOS v${{ steps.version.outputs.version }}
+
+            Retro gaming OS for Orange Pi Zero 3 (Allwinner H618 / Mali G31)
+
+            ### Included
+            - EmulationStation + Panfrost GPU acceleration
+            - RetroArch + libretro cores (NES, SNES, Mega Drive, PSX, GBA, NDS, PCE)
+            - PortMaster with native evdev oga_events
+            - Bluetooth auto-pairing, USB ROM hotplug (ntfs3/exfat)
+            - zram swap, thermal monitor, power profiles
+            - OTA updater via GitHub Releases
+
+            ### Install
+            Flash `.img.xz` to microSD (≥8 GB) with Balena Etcher or `dd`.
+            SHA256 checksum in attached `.sha256` file.
