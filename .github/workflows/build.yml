@@ -6,55 +6,99 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
+      build_type:
+        description: 'Build type: release | debug'
+        required: false
+        default: 'release'
       release_distro:
-        description: 'Distro release (bookworm / trixie / noble)'
+        description: 'Distro release (bookworm / trixie)'
         required: false
         default: 'bookworm'
 
 jobs:
   build:
-    name: Build OrionOS for Orange Pi Zero 3
+    name: "Build OrionOS [${{ github.event.inputs.build_type || 'release' }}]"
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: Checkout repository
+      # ── 1. Checkout ─────────────────────────────────────────────────────────
+      - name: Checkout OrionOS repository
         uses: actions/checkout@v4
 
-      - name: Validate userpatches structure
+      # ── 2. Validate structure ────────────────────────────────────────────────
+      - name: Validate repository structure
         run: |
-          echo "=== Checking critical files ==="
-          [[ -f userpatches/customize-image.sh ]] \
-            && echo "✓ userpatches/customize-image.sh" \
-            || { echo "✗ MISSING: userpatches/customize-image.sh"; exit 1; }
+          echo "=== Проверка структуры репозитория ==="
+          FAIL=0
+          check() {
+            if [[ -e "$1" ]]; then echo "  ✓ $1"
+            else echo "  ✗ MISSING: $1"; FAIL=1; fi
+          }
+          check "userpatches/customize-image.sh"
+          check "src/overlay/opt/orionos"
+          check "config/cores-whitelist.txt"
+          [[ $FAIL -eq 0 ]] || { echo "Критические файлы отсутствуют!"; exit 1; }
 
+      # ── 3. Определяем версию ─────────────────────────────────────────────────
       - name: Determine version
         id: version
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
           elif [[ -f orion.conf ]]; then
-            VERSION=$(grep '^ORION_VERSION' orion.conf | head -1 | cut -d'"' -f2)
-            VERSION="${VERSION:-0.1.0}-dev.$(git rev-parse --short HEAD)"
+            BASE=$(grep '^ORION_VERSION' orion.conf | head -1 | cut -d'"' -f2 || echo "0.1.0")
+            VERSION="${BASE}-dev.$(git rev-parse --short HEAD)"
           else
             VERSION="0.1.0-dev.$(git rev-parse --short HEAD)"
           fi
+          BUILD_TYPE="${{ github.event.inputs.build_type || 'release' }}"
+          # Debug-сборки при пуше тега не делаем
+          [[ "${GITHUB_REF}" == refs/tags/* && "$BUILD_TYPE" == "debug" ]] && BUILD_TYPE="release"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Building OrionOS v${VERSION}"
+          echo "build_type=${BUILD_TYPE}" >> "$GITHUB_OUTPUT"
+          echo "Build: OrionOS v${VERSION} [${BUILD_TYPE}]"
 
-      - name: Patch version into userpatches
+      # ── 4. Патчим customize-image.sh ─────────────────────────────────────────
+      - name: Patch version and build type into customize-image.sh
         run: |
-          sed -i "s/ORION_VERSION=.*/ORION_VERSION=\"${{ steps.version.outputs.version }}\"/" \
-              userpatches/customize-image.sh 2>/dev/null || true
-          [[ -f orion.conf ]] && \
-            sed -i "s/^ORION_VERSION=.*/ORION_VERSION=\"${{ steps.version.outputs.version }}\"/" orion.conf || true
+          VERSION="${{ steps.version.outputs.version }}"
+          BUILD_TYPE="${{ steps.version.outputs.build_type }}"
+          echo "Patching: VERSION=${VERSION}, BUILD_TYPE=${BUILD_TYPE}"
+          sed -i "s/^ORION_VERSION=.*/ORION_VERSION=\"${VERSION}\"/" \
+              userpatches/customize-image.sh
+          sed -i "s/^BUILD_TYPE=.*/BUILD_TYPE=\"${BUILD_TYPE}\"/" \
+              userpatches/customize-image.sh
 
-      # THE FIX: use armbian/build@main action with armbian_runner_clean: "yes"
-      # This frees ~25GB on GitHub runners (removes Android SDK, .NET, Java, etc.)
-      # The action auto-detects userpatches/ and merges it into the build.
-      - name: Build image via official Armbian Action
-        uses: armbian/build@main
+      # ── 5. Готовим overlay для Armbian ─────────────────────────────────────
+      # FIX: armbian/build Action ищет overlay в userpatches/overlay/
+      # У нас файлы лежат в src/overlay/ — копируем перед сборкой
+      - name: Prepare userpatches/overlay from src/overlay
+        run: |
+          echo "Копирование src/overlay/ → userpatches/overlay/"
+          mkdir -p userpatches/overlay
+          # rsync сохраняет права доступа и симлинки
+          rsync -a --exclude='*.so' --exclude='*.git' \
+              src/overlay/ userpatches/overlay/
+          echo "Содержимое userpatches/overlay:"
+          find userpatches/overlay -type f | head -30
+
+      # ── 6. Ядра: скачиваем если нужно ──────────────────────────────────────
+      # На GitHub-runner cores не могут быть в git (большой размер).
+      # customize-image.sh скачает их сам во время сборки образа.
+      # Этот шаг только проверяет whitelist.
+      - name: Validate cores whitelist
+        run: |
+          WHITELIST="config/cores-whitelist.txt"
+          COUNT=$(grep -v '^#' "$WHITELIST" | grep -v '^$' | wc -l)
+          echo "Cores в whitelist: ${COUNT}"
+
+      # ── 7. Сборка образа через официальный Armbian Action ──────────────────
+      # ВАЖНО: используем pinned тег, а не @main, для воспроизводимых сборок.
+      # При обновлении Armbian — менять тег здесь, проверять, затем коммитить.
+      - name: Build OrionOS image
+        uses: armbian/build@v25.02
         with:
           armbian_token:          "${{ secrets.GITHUB_TOKEN }}"
           armbian_board:          "orangepizero3"
@@ -64,20 +108,85 @@ jobs:
           armbian_ui:             "minimal"
           armbian_compress:       "sha,img,xz"
           armbian_runner_clean:   "yes"
-          armbian_release_title:  "OrionOS v${{ steps.version.outputs.version }}"
-          armbian_release_body: |
+
+      # ── 8. Собираем имя артефакта ────────────────────────────────────────────
+      - name: Locate built image
+        id: image
+        run: |
+          # Armbian складывает образы в output/images/
+          IMG=$(find output/images -name "*.img.xz" 2>/dev/null | head -1 || \
+                find . -name "Armbian_*orangepizero3*.img.xz" 2>/dev/null | head -1 || \
+                echo "")
+          if [[ -z "$IMG" ]]; then
+            echo "WARN: .img.xz не найден, ищем .img..."
+            IMG=$(find output/images -name "*.img" 2>/dev/null | head -1 || echo "")
+          fi
+          echo "image_path=${IMG}" >> "$GITHUB_OUTPUT"
+          echo "Найден образ: ${IMG}"
+
+      # ── 9. Переименовываем в OrionOS-formated имя ───────────────────────────
+      - name: Rename image to OrionOS naming
+        if: steps.image.outputs.image_path != ''
+        run: |
+          SRC="${{ steps.image.outputs.image_path }}"
+          EXT="${SRC##*.}"
+          BASE="OrionOS-${{ steps.version.outputs.version }}-${{ steps.version.outputs.build_type }}-orangepizero3"
+          DIR="$(dirname "$SRC")"
+          # Переименовываем основной файл
+          mv "$SRC" "${DIR}/${BASE}.img.xz" 2>/dev/null || \
+          mv "$SRC" "${DIR}/${BASE}.img" 2>/dev/null || true
+          # SHA файл
+          find "$DIR" -name "*.sha*" | while read -r sha; do
+            mv "$sha" "${DIR}/${BASE}.sha256" 2>/dev/null || true
+          done
+          echo "renamed=${DIR}/${BASE}.img.xz" >> "$GITHUB_ENV"
+          ls -lh "$DIR/"
+
+      # ── 10. Upload artifact (для debug / ручного запуска) ───────────────────
+      - name: Upload image artifact
+        if: steps.image.outputs.image_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: "OrionOS-${{ steps.version.outputs.version }}-${{ steps.version.outputs.build_type }}"
+          path: "output/images/OrionOS-*.img*"
+          retention-days: 7
+
+      # ── 11. GitHub Release (только при пуше тега + release-сборка) ──────────
+      - name: Create GitHub Release
+        if: |
+          startsWith(github.ref, 'refs/tags/v') &&
+          steps.version.outputs.build_type == 'release' &&
+          steps.image.outputs.image_path != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "OrionOS v${{ steps.version.outputs.version }}"
+          body: |
             ## OrionOS v${{ steps.version.outputs.version }}
-
-            Retro gaming OS for Orange Pi Zero 3 (Allwinner H618 / Mali G31)
-
-            ### Included
-            - EmulationStation + Panfrost GPU acceleration
-            - RetroArch + libretro cores (NES, SNES, Mega Drive, PSX, GBA, NDS, PCE)
-            - PortMaster with native evdev oga_events
-            - Bluetooth auto-pairing, USB ROM hotplug (ntfs3/exfat)
-            - zram swap, thermal monitor, power profiles
-            - OTA updater via GitHub Releases
-
-            ### Install
-            Flash `.img.xz` to microSD (≥8 GB) with Balena Etcher or `dd`.
-            SHA256 checksum in attached `.sha256` file.
+            
+            Retro gaming OS для Orange Pi Zero 3 (Allwinner H618 / Mali G31)
+            
+            ### Включено в образ
+            - RetroArch + libretro ядра (NES, SNES, MD, PSX, GBA, NDS, PCE, Arcade)
+            - Bluetooth авто-сопряжение геймпадов
+            - USB ROM hotplug (FAT32, exFAT, NTFS3, ext4)
+            - Автоматическое создание папки OrionOS на USB-накопителях
+            - zram swap, оптимизации для H618/Mali G31
+            - SSH отключён по умолчанию (включается через `Ports → SSH Enable`)
+            
+            ### Установка
+            Запишите `.img.xz` на microSD (≥8 ГБ) через Balena Etcher или:
+            ```
+            xz -d OrionOS-*.img.xz
+            dd if=OrionOS-*.img of=/dev/sdX bs=4M status=progress
+            ```
+            
+            ### Первый запуск
+            Система автоматически расширит файловую систему.
+            Логин: `orion` / Пароль: `orion`
+          files: |
+            output/images/OrionOS-*.img.xz
+            output/images/OrionOS-*.sha256
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
