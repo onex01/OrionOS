@@ -45,7 +45,7 @@ echo ""
 echo -e "${Y}📄 Critical Files${NC}"
 
 for file in config/cores-whitelist.txt \
-            src/customize-image.sh \
+            userpatches/customize-image.sh \
             scripts/build.sh \
             scripts/compress.sh; do
     if [ -f "$file" ]; then

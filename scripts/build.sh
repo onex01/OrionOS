@@ -80,7 +80,7 @@ fi
 echo "[4/7] Preparing userpatches..."
 mkdir -p "$ARMBUILD_DIR/userpatches/overlay"
 cp -r "$SRC_OVERLAY/." "$ARMBUILD_DIR/userpatches/overlay/"
-cp "$ROOT_DIR/src/customize-image.sh" "$ARMBUILD_DIR/userpatches/customize-image.sh"
+cp "$ROOT_DIR/userpatches/customize-image.sh" "$ARMBUILD_DIR/userpatches/customize-image.sh"
 chmod +x "$ARMBUILD_DIR/userpatches/customize-image.sh"
 
 # Kernel config

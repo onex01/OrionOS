@@ -85,7 +85,7 @@ OrionOS/
 # Что КОММИТИМ (наши файлы):
 #   • config/                                   → whitelist, kernel config
 #   • scripts/                                  → все .sh
-#   • src/customize-image.sh                    → кастомизация
+#   • userpatches/customize-image.sh                    → кастомизация
 #   • src/overlay/ (кроме cores, themes, sources)
 #   • docs/, packages/, .github/
 #
